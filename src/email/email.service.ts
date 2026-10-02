@@ -1,12 +1,17 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Resend } from 'resend';
 
 @Injectable()
 export class EmailService {
   private resend: Resend;
+  private readonly logger = new Logger(EmailService.name);
 
   constructor() {
     this.resend = new Resend(process.env.RESEND_API_KEY);
+    if (!this.resend) {
+      this.logger.warn('RESEND_API_KEY is not defined in environment variables.');
+    }
+    
   }
 
   async sendVerificationEmail(email: string, token: string) {
