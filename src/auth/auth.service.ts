@@ -1,17 +1,21 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { config as loadEnv } from 'dotenv';
 loadEnv();
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { EmailService } from '../email/email.service';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
-import { SignupDto, LoginDto, VerifyEmailDto, ForgotPasswordDto, ResetPasswordDto } from './dto/auth.dto';
+import { SignupDto, LoginDto, VerifyEmailDto, ForgotPasswordDto, ResetPasswordDto, AdminLoginDto, VerifyAdminTokenDto } from './dto/auth.dto';
 
 @Injectable()
 export class AuthService {
   private supabase: SupabaseClient;
 
-  constructor(private emailService: EmailService) {
+  constructor(
+    private emailService: EmailService,
+    private jwtService: JwtService
+  ) {
     this.supabase = createClient(
       process.env.SUPABASE_URL!,
       process.env.SUPABASE_KEY!,
@@ -86,10 +90,15 @@ export class AuthService {
       throw new UnauthorizedException('Please verify your email before logging in');
     }
 
+    const payload = { sub: user.id, role: user.role };
+
+    const accessToken = await this.jwtService.signAsync(payload);
+
     return {
       message: 'Login successful',
       userId: user.id,
       role: user.role,
+      accessToken: accessToken,
     };
   }
 
@@ -139,7 +148,7 @@ export class AuthService {
 
     await this.emailService.sendPasswordResetEmail(user.email, resetToken);
 
-    return { message: 'If an account with that email exists, a reset link has been sent.' };
+    return { message: 'A reset link has been sent.' };
   }
 
   async resetPassword(data: ResetPasswordDto) {
@@ -168,5 +177,74 @@ export class AuthService {
     }
 
     return { message: 'Password changed successfully. You can now log in.' };
+  }
+
+  async requestAdminLogin(data: AdminLoginDto) {
+    // 1. Get list of authorized admin emails from ENV
+    const allowedEmails = (process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase());
+
+    const inputEmail = data.email.trim().toLowerCase();
+
+    // 2. Validate against ADMIN_EMAILS
+    if (!allowedEmails.includes(inputEmail)) {
+      throw new ForbiddenException('Unauthorized: Email is not registered as an Admin');
+    }
+
+    // 3. Generate verification token and set 15 min expiration
+    const token = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+    // 4. Save token to Supabase admin_users table
+    const { error } = await this.supabase
+      .from('admin_users')
+      .insert({
+        email: inputEmail,
+        token,
+        expires_at: expiresAt,
+      });
+
+    if (error) {
+      throw new BadRequestException(`Failed to generate admin token: ${error.message}`);
+    }
+
+    // 5. Send verification magic link email
+    await this.emailService.sendAdminMagicLink(inputEmail, token);
+
+    return { message: 'Verification link sent to your admin email.' };
+  }
+
+  async verifyAdminLogin(data: VerifyAdminTokenDto) {
+    // 1. Find token in Supabase
+    const { data: adminToken } = await this.supabase
+      .from('admin_users')
+      .select('*')
+      .eq('token', data.token)
+      .maybeSingle();
+
+    if (!adminToken) {
+      throw new BadRequestException('Invalid or expired verification token');
+    }
+
+    // 2. Check if token expired
+    if (new Date(adminToken.expires_at) < new Date()) {
+      // Clean up expired token
+      await this.supabase.from('admin_users').delete().eq('id', adminToken.id);
+      throw new BadRequestException('Verification token has expired');
+    }
+
+    // 3. Delete token so it cannot be reused
+    await this.supabase.from('admin_users').delete().eq('id', adminToken.id);
+
+    // 4. Generate Admin JWT Access Token
+    const payload = { email: adminToken.email, role: 'ADMIN' };
+    const accessToken = await this.jwtService.signAsync(payload);
+
+    return {
+      message: 'Admin authentication successful',
+      role: 'ADMIN',
+      accessToken,
+    };
   }
 }

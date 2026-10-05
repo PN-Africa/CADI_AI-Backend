@@ -75,3 +75,59 @@ export class ResetPasswordDto {
   @MinLength(8)
   newPassword!: string;
 }
+
+
+export class BaseAuthResponseDto {
+  @ApiProperty({ 
+    example: 'Account created successfully. Please check your email to verify your account.',
+    description: 'Response message'
+  })
+  message!: string;
+}
+
+export class LoginResponseDto {
+  @ApiProperty({ example: 'Login successful' })
+  message!: string;
+
+  @ApiProperty({ example: '123e4567-e89b-12d3-a456-426614174000' })
+  userId!: string;
+
+  @ApiProperty({ enum: Role, example: Role.CAREGIVER })
+  role!: Role;
+
+  @ApiProperty({ 
+    example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...', 
+    description: 'JWT Access Token to be sent in the Authorization header for protected routes' 
+  })
+  accessToken!: string;
+}
+
+export class AdminLoginDto {
+  @ApiProperty({ example: 'owner@gmail.com', description: 'Admin Gmail address' })
+  @IsNotEmpty()
+  @IsEmail()
+  email!: string;
+}
+
+export class VerifyAdminTokenDto {
+  @ApiProperty({ description: 'Verification token sent via email' })
+  @IsNotEmpty()
+  @IsString()
+  token!: string;
+}
+
+export class AdminLoginResponseDto {
+  @ApiProperty({ example: 'Verification link sent to your email.' })
+  message!: string;
+}
+
+export class AdminVerifyResponseDto {
+  @ApiProperty({ example: 'Admin authentication successful' })
+  message!: string;
+
+  @ApiProperty({ example: 'ADMIN' })
+  role!: string;
+
+  @ApiProperty({ description: 'JWT Access Token' })
+  accessToken!: string;
+}
