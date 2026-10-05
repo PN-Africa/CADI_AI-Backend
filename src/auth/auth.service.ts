@@ -1,16 +1,29 @@
-import { BadRequestException, Injectable, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { 
+  BadRequestException, 
+  Injectable, 
+  UnauthorizedException, 
+  ForbiddenException, 
+  Logger 
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { config as loadEnv } from 'dotenv';
-loadEnv();
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { EmailService } from '../email/email.service';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
-import { SignupDto, LoginDto, VerifyEmailDto, ForgotPasswordDto, ResetPasswordDto, AdminLoginDto, VerifyAdminTokenDto } from './dto/auth.dto';
+import { 
+  SignupDto, 
+  LoginDto, 
+  VerifyEmailDto, 
+  ForgotPasswordDto, 
+  ResetPasswordDto, 
+  AdminLoginDto, 
+  VerifyAdminTokenDto 
+} from './dto/auth.dto';
 
 @Injectable()
 export class AuthService {
   private supabase: SupabaseClient;
+  private readonly logger = new Logger(AuthService.name);
 
   constructor(
     private emailService: EmailService,
@@ -31,17 +44,24 @@ export class AuthService {
       throw new BadRequestException('Passwords do not match');
     }
 
+    const cleanEmail = data.email ? data.email.trim().toLowerCase() : null;
+    const cleanPhone = data.phone ? data.phone.trim() : null;
+
     // Build conditional query for checking existing user
     let query = this.supabase.from('users').select('id');
-    if (data.email && data.phone) {
-      query = query.or(`email.eq.\({data.email},phone.eq.\){data.phone}`);
-    } else if (data.email) {
-      query = query.eq('email', data.email);
-    } else if (data.phone) {
-      query = query.eq('phone', data.phone);
+    if (cleanEmail && cleanPhone) {
+      query = query.or(`email.ilike.\({cleanEmail},phone.eq.\){cleanPhone}`);
+    } else if (cleanEmail) {
+      query = query.ilike('email', cleanEmail);
+    } else if (cleanPhone) {
+      query = query.eq('phone', cleanPhone);
     }
 
-    const { data: existingUser } = await query.maybeSingle();
+    const { data: existingUser, error: findError } = await query.maybeSingle();
+
+    if (findError) {
+      this.logger.error(`Error checking existing user: ${findError.message}`);
+    }
 
     if (existingUser) {
       throw new BadRequestException('User with this email or phone already exists');
@@ -54,8 +74,8 @@ export class AuthService {
       .from('users')
       .insert({
         role: data.role,
-        email: data.email,
-        phone: data.phone,
+        email: cleanEmail,
+        phone: cleanPhone,
         medical_license_id: data.medicalLicenseId,
         password: hashedPassword,
         verification_token: verificationToken,
@@ -63,8 +83,9 @@ export class AuthService {
       .select()
       .single();
 
-    if (error) {
-      throw new BadRequestException(`Failed to create user: ${error.message}`);
+    if (error || !user) {
+      this.logger.error(`Signup DB Insert Error: ${error?.message}`);
+      throw new BadRequestException(`Failed to create user: ${error?.message || 'Unknown error'}`);
     }
 
     // If email is provided, send the verification email
@@ -76,11 +97,19 @@ export class AuthService {
   }
 
   async login(data: LoginDto) {
-    const { data: user } = await this.supabase
+    const cleanIdentifier = data.identifier.trim().toLowerCase();
+    const rawIdentifier = data.identifier.trim();
+
+    const { data: user, error } = await this.supabase
       .from('users')
       .select('*')
-      .or(`email.eq.\({data.identifier},phone.eq.\){data.identifier}`)
+      .or(`email.ilike.\({cleanIdentifier},phone.eq.\){rawIdentifier}`)
       .maybeSingle();
+
+    if (error) {
+      this.logger.error(`Login DB Query Error: ${error.message}`);
+      throw new UnauthorizedException('Invalid credentials');
+    }
 
     if (!user || !(await bcrypt.compare(data.password, user.password))) {
       throw new UnauthorizedException('Invalid credentials');
@@ -91,25 +120,24 @@ export class AuthService {
     }
 
     const payload = { sub: user.id, role: user.role };
-
     const accessToken = await this.jwtService.signAsync(payload);
 
     return {
       message: 'Login successful',
       userId: user.id,
       role: user.role,
-      accessToken: accessToken,
+      accessToken,
     };
   }
 
   async verifyEmail(data: VerifyEmailDto) {
-    const { data: user } = await this.supabase
+    const { data: user, error: findError } = await this.supabase
       .from('users')
       .select('*')
       .eq('verification_token', data.token)
       .maybeSingle();
 
-    if (!user) {
+    if (findError || !user) {
       throw new BadRequestException('Invalid or expired verification token');
     }
 
@@ -122,6 +150,7 @@ export class AuthService {
       .eq('id', user.id);
 
     if (error) {
+      this.logger.error(`Email verification DB Error: ${error.message}`);
       throw new BadRequestException('Failed to verify email');
     }
 
@@ -129,10 +158,12 @@ export class AuthService {
   }
 
   async forgotPassword(data: ForgotPasswordDto) {
+    const cleanEmail = data.email.trim().toLowerCase();
+
     const { data: user } = await this.supabase
       .from('users')
       .select('*')
-      .eq('email', data.email)
+      .ilike('email', cleanEmail)
       .maybeSingle();
 
     if (!user?.email) {
@@ -141,24 +172,28 @@ export class AuthService {
 
     const resetToken = randomBytes(32).toString('hex');
 
-    await this.supabase
+    const { error } = await this.supabase
       .from('users')
       .update({ reset_password_token: resetToken })
       .eq('id', user.id);
 
-    await this.emailService.sendPasswordResetEmail(user.email, resetToken);
+    if (error) {
+      this.logger.error(`Forgot Password Token Update Error: ${error.message}`);
+    } else {
+      await this.emailService.sendPasswordResetEmail(user.email, resetToken);
+    }
 
-    return { message: 'A reset link has been sent.' };
+    return { message: 'If an account with that email exists, a reset link has been sent.' };
   }
 
   async resetPassword(data: ResetPasswordDto) {
-    const { data: user } = await this.supabase
+    const { data: user, error: findError } = await this.supabase
       .from('users')
       .select('*')
       .eq('reset_password_token', data.token)
       .maybeSingle();
 
-    if (!user) {
+    if (findError || !user) {
       throw new BadRequestException('Invalid or expired reset token');
     }
 
@@ -173,6 +208,7 @@ export class AuthService {
       .eq('id', user.id);
 
     if (error) {
+      this.logger.error(`Reset Password DB Error: ${error.message}`);
       throw new BadRequestException('Failed to reset password');
     }
 
@@ -206,6 +242,7 @@ export class AuthService {
       });
 
     if (error) {
+      this.logger.error(`Request Admin Login DB Error: ${error.message}`);
       throw new BadRequestException(`Failed to generate admin token: ${error.message}`);
     }
 
@@ -217,19 +254,18 @@ export class AuthService {
 
   async verifyAdminLogin(data: VerifyAdminTokenDto) {
     // 1. Find token in Supabase
-    const { data: adminToken } = await this.supabase
+    const { data: adminToken, error: findError } = await this.supabase
       .from('admin_users')
       .select('*')
       .eq('token', data.token)
       .maybeSingle();
 
-    if (!adminToken) {
+    if (findError || !adminToken) {
       throw new BadRequestException('Invalid or expired verification token');
     }
 
     // 2. Check if token expired
     if (new Date(adminToken.expires_at) < new Date()) {
-      // Clean up expired token
       await this.supabase.from('admin_users').delete().eq('id', adminToken.id);
       throw new BadRequestException('Verification token has expired');
     }
