@@ -22,17 +22,21 @@ import {
 
 @Injectable()
 export class AuthService {
-  private supabase: SupabaseClient;
+  private supabase!: SupabaseClient;
   private readonly logger = new Logger(AuthService.name);
 
   constructor(
     private emailService: EmailService,
     private jwtService: JwtService
   ) {
-    this.supabase = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_KEY!,
-    );
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      this.logger.error('SUPABASE_URL or SUPABASE_KEY is missing in environment variables.');
+    } else {
+      this.supabase = createClient(supabaseUrl, supabaseKey);
+    }
   }
 
   async signup(data: SignupDto) {
@@ -47,10 +51,9 @@ export class AuthService {
     const cleanEmail = data.email ? data.email.trim().toLowerCase() : null;
     const cleanPhone = data.phone ? data.phone.trim() : null;
 
-    // Build conditional query for checking existing user
     let query = this.supabase.from('users').select('id');
     if (cleanEmail && cleanPhone) {
-      query = query.or(`email.ilike.\({cleanEmail},phone.eq.\){cleanPhone}`);
+      query = query.or(`email.ilike.${cleanEmail},phone.eq.${cleanPhone}`);
     } else if (cleanEmail) {
       query = query.ilike('email', cleanEmail);
     } else if (cleanPhone) {
@@ -88,7 +91,6 @@ export class AuthService {
       throw new BadRequestException(`Failed to create user: ${error?.message || 'Unknown error'}`);
     }
 
-    // If email is provided, send the verification email
     if (user.email) {
       await this.emailService.sendVerificationEmail(user.email, verificationToken);
     }
@@ -103,15 +105,22 @@ export class AuthService {
     const { data: user, error } = await this.supabase
       .from('users')
       .select('*')
-      .or(`email.ilike.\({cleanIdentifier},phone.eq.\){rawIdentifier}`)
+      .or(`email.ilike.${cleanIdentifier},phone.eq.${rawIdentifier}`)
       .maybeSingle();
 
     if (error) {
       this.logger.error(`Login DB Query Error: ${error.message}`);
+      throw new UnauthorizedException('Database query failed during authentication');
+    }
+
+    if (!user) {
+      this.logger.warn(`Login failed: No user found for ${cleanIdentifier}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    if (!user || !(await bcrypt.compare(data.password, user.password))) {
+    const isPasswordValid = await bcrypt.compare(data.password, user.password);
+    if (!isPasswordValid) {
+      this.logger.warn(`Login failed: Password mismatch for ${cleanIdentifier}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -216,23 +225,20 @@ export class AuthService {
   }
 
   async requestAdminLogin(data: AdminLoginDto) {
-    // 1. Get list of authorized admin emails from ENV
     const allowedEmails = (process.env.ADMIN_EMAILS || '')
       .split(',')
       .map((e) => e.trim().toLowerCase());
 
     const inputEmail = data.email.trim().toLowerCase();
 
-    // 2. Validate against ADMIN_EMAILS
     if (!allowedEmails.includes(inputEmail)) {
       throw new ForbiddenException('Unauthorized: Email is not registered as an Admin');
     }
 
-    // 3. Generate verification token and set 15 min expiration
     const token = randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-    // 4. Save token to Supabase admin_users table
+    // Uses admin_users table
     const { error } = await this.supabase
       .from('admin_users')
       .insert({
@@ -246,14 +252,13 @@ export class AuthService {
       throw new BadRequestException(`Failed to generate admin token: ${error.message}`);
     }
 
-    // 5. Send verification magic link email
     await this.emailService.sendAdminMagicLink(inputEmail, token);
 
     return { message: 'Verification link sent to your admin email.' };
   }
 
   async verifyAdminLogin(data: VerifyAdminTokenDto) {
-    // 1. Find token in Supabase
+    // Uses admin_users table
     const { data: adminToken, error: findError } = await this.supabase
       .from('admin_users')
       .select('*')
@@ -264,16 +269,13 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired verification token');
     }
 
-    // 2. Check if token expired
     if (new Date(adminToken.expires_at) < new Date()) {
       await this.supabase.from('admin_users').delete().eq('id', adminToken.id);
       throw new BadRequestException('Verification token has expired');
     }
 
-    // 3. Delete token so it cannot be reused
     await this.supabase.from('admin_users').delete().eq('id', adminToken.id);
 
-    // 4. Generate Admin JWT Access Token
     const payload = { email: adminToken.email, role: 'ADMIN' };
     const accessToken = await this.jwtService.signAsync(payload);
 
