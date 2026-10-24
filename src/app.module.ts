@@ -6,6 +6,9 @@ import { AuthModule } from './auth/auth.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { EmailModule } from './email/email.module';
 import { PatientsModule } from './patients/patients.module';
+import { OverviewModule } from './overview/overview.module'; 
+import { NotificationsModule } from './notifications/notifications.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -16,6 +19,9 @@ import { PatientsModule } from './patients/patients.module';
     EmailModule,
     DashboardModule,
     PatientsModule,
+    OverviewModule,
+    NotificationsModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

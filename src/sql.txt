@@ -37,8 +37,8 @@ EXECUTE FUNCTION update_updated_at_column();
 
 //admin auth
 
--- Create the admin_tokens table for passwordless magic links
-CREATE TABLE admin_tokens (
+-- Create the admin_users table for passwordless magic links
+CREATE TABLE admin_users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT NOT NULL,
   token TEXT UNIQUE NOT NULL,
@@ -47,7 +47,7 @@ CREATE TABLE admin_tokens (
 );
 
 -- Index for fast token lookups during verification
-CREATE INDEX admin_tokens_token_idx ON admin_tokens(token);
+CREATE INDEX admin_users_token_idx ON admin_users(token);
 
 //dashboard
 
@@ -69,3 +69,77 @@ CREATE TABLE patients (
 -- 3. Index for fast status and caregiver filtering
 CREATE INDEX patients_status_idx ON patients(status);
 CREATE INDEX patients_caregiver_idx ON patients(assigned_caregiver_id);
+
+-- 1. Add extended fields to the patients table for detailed view metrics
+ALTER TABLE patients 
+ADD COLUMN IF NOT EXISTS age INTEGER DEFAULT 65,
+ADD COLUMN IF NOT EXISTS heart_rate INTEGER DEFAULT 75,
+ADD COLUMN IF NOT EXISTS blood_oxygen FLOAT DEFAULT 98.0,
+ADD COLUMN IF NOT EXISTS temperature FLOAT DEFAULT 36.6,
+ADD COLUMN IF NOT EXISTS movement_km FLOAT DEFAULT 1.2,
+ADD COLUMN IF NOT EXISTS mins_since_inactivity INTEGER DEFAULT 15,
+ADD COLUMN IF NOT EXISTS mins_since_high_temp INTEGER DEFAULT 120,
+ADD COLUMN IF NOT EXISTS mins_since_sudden_movement INTEGER DEFAULT 45,
+ADD COLUMN IF NOT EXISTS mins_since_normal_movement INTEGER DEFAULT 5,
+ADD COLUMN IF NOT EXISTS mins_since_position_change INTEGER DEFAULT 30;
+
+-- 2. Create monitoring_readings table for time-series charts (Monitoring Tab)
+CREATE TABLE IF NOT EXISTS monitoring_readings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id UUID REFERENCES patients(id) ON DELETE CASCADE,
+  heart_rate INTEGER NOT NULL,
+  blood_oxygen FLOAT NOT NULL,
+  temperature FLOAT NOT NULL,
+  movement_val FLOAT NOT NULL,
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 3. Create activity_events table for activity timeline (Activity Tab)
+CREATE TABLE IF NOT EXISTS activity_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id UUID REFERENCES patients(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL, -- e.g., 'INACTIVITY_DETECTION', 'MOVEMENT_DETECTION', 'FALL_DETECTION'
+  description TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 4. Create indexing for high-performance retrieval
+CREATE INDEX IF NOT EXISTS activity_events_patient_time_idx ON activity_events(patient_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS monitoring_readings_patient_time_idx ON monitoring_readings(patient_id, recorded_at DESC);
+
+
+//Activity event_type
+
+-- 1. Add resolution and notes tracking columns to activity_events
+ALTER TABLE activity_events 
+ADD COLUMN IF NOT EXISTS duration TEXT DEFAULT '45 mins',
+ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'Activity Timeline',
+ADD COLUMN IF NOT EXISTS caregiver_notes TEXT,
+ADD COLUMN IF NOT EXISTS resolution_reason TEXT,
+ADD COLUMN IF NOT EXISTS resolution_notes TEXT,
+ADD COLUMN IF NOT EXISTS resolved_status TEXT DEFAULT 'PENDING', -- PENDING, DRAFT, RESOLVED
+ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS resolved_by UUID REFERENCES users(id);
+
+-- 2. Create event_history audit table for tracking changes and updates
+CREATE TABLE IF NOT EXISTS event_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id UUID REFERENCES activity_events(id) ON DELETE CASCADE,
+  patient_id UUID REFERENCES patients(id) ON DELETE CASCADE,
+  action_type TEXT NOT NULL, -- e.g., 'NOTE_ADDED', 'SAVED_AS_DRAFT', 'RESOLVED'
+  details TEXT NOT NULL,
+  performed_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS event_history_patient_idx ON event_history(patient_id, created_at DESC);
+
+// Notification alert
+
+-- Add alert severity classification and read status to activity_events
+ALTER TABLE activity_events 
+ADD COLUMN IF NOT EXISTS alert_severity TEXT DEFAULT 'FOLLOW_UP', -- 'URGENT', 'FOLLOW_UP'
+ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE;
+
+-- Index for fast notification filtering and sorting
+CREATE INDEX IF NOT EXISTS activity_events_notification_idx ON activity_events(is_read, alert_severity, created_at DESC);

@@ -1,6 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { ActivityFilter } from './dto/patient.dto';
+import { 
+    ActivityFilter,
+    HistoryDayFilter,
+    ResolveEventDto,
+    HistoryStatusFilter,
+} from './dto/patient.dto';
 
 @Injectable()
 export class PatientsService {
@@ -145,5 +150,237 @@ export class PatientsService {
       description: e.description,
       timestamp: e.created_at,
     }));
+  }
+
+  // 1. Get Activity Timeline List
+  async getPatientActivityTimeline(patientId: string) {
+    const { data: events, error } = await this.supabase
+      .from('activity_events')
+      .select('id, event_type, created_at')
+      .eq('patient_id', patientId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      this.logger.error(`Error fetching activity timeline: ${error.message}`);
+    }
+
+    return (events || []).map((e) => ({
+      id: e.id,
+      detection: e.event_type === 'INACTIVITY_DETECTION' ? 'Inactivity detected' : 'Movement detected',
+      time: e.created_at,
+    }));
+  }
+
+  // 2. Get Single Event Details
+  async getEventDetails(eventId: string) {
+    const { data: event, error } = await this.supabase
+      .from('activity_events')
+      .select('*')
+      .eq('id', eventId)
+      .maybeSingle();
+
+    if (error || !event) {
+      throw new NotFoundException('Activity event not found');
+    }
+
+    const recordedDate = new Date(event.created_at);
+    const formattedDate = recordedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + 
+      ' - ' + recordedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    return {
+      id: event.id,
+      detectionName: event.event_type === 'INACTIVITY_DETECTION' ? 'Inactivity detected' : 'Movement detected',
+      time: event.created_at,
+      eventOverview: {
+        recordedAt: formattedDate,
+        inactivityDuration: event.duration || '45 mins',
+        source: event.source || 'Activity Timeline',
+      },
+      caregiverNotes: event.caregiver_notes || null,
+      resolvedStatus: event.resolved_status || 'PENDING',
+    };
+  }
+
+  // 3. Add Caregiver Note (Restricted to Caregiver role in controller)
+  async addCaregiverNote(eventId: string, userId: string, note: string) {
+    const { error } = await this.supabase
+      .from('activity_events')
+      .update({ caregiver_notes: note })
+      .eq('id', eventId);
+
+    if (error) {
+      throw new BadRequestException('Failed to add caregiver note');
+    }
+
+    // Log to history audit trail
+    await this.supabase.from('event_history').insert({
+      event_id: eventId,
+      action_type: 'NOTE_ADDED',
+      details: `Caregiver added observation note: ${note}`,
+      performed_by: userId,
+    });
+
+    return { message: 'Caregiver note recorded successfully' };
+  }
+
+  // 4. Resolve Details / Save Draft (Restricted to Healthcare Professional in controller)
+  async resolveEvent(eventId: string, userId: string, dto: ResolveEventDto) {
+    const { data: event, error: findError } = await this.supabase
+      .from('activity_events')
+      .select('*, patients(id, status)')
+      .eq('id', eventId)
+      .maybeSingle();
+
+    if (findError || !event) {
+      throw new NotFoundException('Event not found');
+    }
+
+    const statusToSet = dto.isDraft ? 'DRAFT' : 'RESOLVED';
+
+    // Update activity event record
+    const { error: updateError } = await this.supabase
+      .from('activity_events')
+      .update({
+        resolution_reason: dto.resolutionReason,
+        resolution_notes: dto.resolutionNotes,
+        resolved_status: statusToSet,
+        resolved_at: dto.isDraft ? null : new Date().toISOString(),
+        resolved_by: userId,
+      })
+      .eq('id', eventId);
+
+    if (updateError) {
+      throw new BadRequestException('Failed to update event resolution');
+    }
+
+    // If fully resolved, update patient status in database and history
+    if (!dto.isDraft) {
+      await this.supabase
+        .from('patients')
+        .update({ status: dto.updatedPatientStatus, updated_at: new Date().toISOString() })
+        .eq('id', event.patient_id);
+    }
+
+    // Log to history audit trail
+    await this.supabase.from('event_history').insert({
+      event_id: eventId,
+      patient_id: event.patient_id,
+      action_type: dto.isDraft ? 'SAVED_AS_DRAFT' : 'RESOLVED',
+      details: dto.isDraft ? 'Event saved as draft' : `Event resolved with status set to ${dto.updatedPatientStatus}`,
+      performed_by: userId,
+    });
+
+    const recordedDate = new Date(event.created_at);
+    const formattedDate = recordedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + 
+      ' - ' + recordedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    return {
+      message: dto.isDraft ? 'Resolution saved as draft successfully.' : 'Event resolved successfully and patient status updated.',
+      eventSummaries: {
+        detection: event.event_type === 'INACTIVITY_DETECTION' ? 'Inactivity detected' : 'Movement detected',
+        recordedAt: formattedDate,
+        inactivityDuration: event.duration || '45 mins',
+      },
+      resolutionDetails: {
+        resolutionReasons: dto.resolutionReason,
+        resolutionNotes: dto.resolutionNotes,
+      },
+      statusIndication: statusToSet,
+      updatedPatientStatus: dto.updatedPatientStatus,
+      whatsNext: {
+        viewPatientHistoryUrl: `/patients/${event.patient_id}/history`,
+        viewMonitoringUrl: `/patients/${event.patient_id}/monitoring`,
+      },
+    };
+  }
+
+  // 1. Get Patient History List with Day & Status Filters
+  async getPatientHistoryList(
+    patientId: string, 
+    dayFilter: HistoryDayFilter = HistoryDayFilter.ALL, 
+    statusFilter: HistoryStatusFilter = HistoryStatusFilter.ALL
+  ) {
+    let query = this.supabase
+      .from('activity_events')
+      .select('*')
+      .eq('patient_id', patientId);
+
+    // Apply Day filter
+    if (dayFilter === HistoryDayFilter.TODAY) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      query = query.gte('created_at', startOfDay.toISOString());
+    } else if (dayFilter === HistoryDayFilter.YESTERDAY) {
+      const startOfYesterday = new Date();
+      startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+      startOfYesterday.setHours(0, 0, 0, 0);
+      const endOfYesterday = new Date();
+      endOfYesterday.setHours(0, 0, 0, 0);
+      query = query.gte('created_at', startOfYesterday.toISOString()).lt('created_at', endOfYesterday.toISOString());
+    }
+
+    // Apply Status filter
+    if (statusFilter && statusFilter !== HistoryStatusFilter.ALL) {
+      query = query.eq('resolved_status', statusFilter);
+    }
+
+    const { data: events, error } = await query.order('created_at', { ascending: false });
+
+    if (error) {
+      this.logger.error(`Error fetching patient history: ${error.message}`);
+      throw new BadRequestException('Failed to retrieve history');
+    }
+
+    return (events || []).map((e) => {
+      const recordedDate = new Date(e.created_at);
+      const timeStr = recordedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const dateStr = recordedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const isRecorded = e.resolved_status === 'RESOLVED' || e.resolved_status === 'COMPLETED' ? 'Recorded' : 'Open';
+
+      return {
+        id: e.id,
+        timeAndRecordingIndication: `${dateStr} ${timeStr} (${isRecorded})`,
+        columnDetails: {
+          detectionNameAndSource: `${e.event_type === 'INACTIVITY_DETECTION' ? 'Inactivity detected' : 'Movement detected'} - ${e.source || 'Activity Timeline'}`,
+          resolutionReasonsAndLastChecked: `${e.resolution_reason || 'Pending resolution'} - Last checked recently`,
+          resolutionNotesAndAlertType: `${e.resolution_notes || 'No notes added'} - ${e.event_type}`,
+          alertSource: e.source || 'Activity Timeline',
+          inactivityDuration: e.duration || '45 mins',
+          statusIndication: e.resolved_status || 'OPEN',
+        },
+      };
+    });
+  }
+
+  // 2. Get History Event Detail View
+  async getHistoryEventDetail(eventId: string) {
+    const { data: event, error } = await this.supabase
+      .from('activity_events')
+      .select('*')
+      .eq('id', eventId)
+      .maybeSingle();
+
+    if (error || !event) {
+      throw new NotFoundException('History event record not found');
+    }
+
+    const recordedDate = new Date(event.created_at);
+    const formattedRecordedTime = recordedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + 
+      ' - ' + recordedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    return {
+      id: event.id,
+      detectionName: event.event_type === 'INACTIVITY_DETECTION' ? 'Inactivity detected' : 'Movement detected',
+      alertType: event.event_type,
+      eventInformation: {
+        recordedTime: formattedRecordedTime,
+        inactivityDuration: event.duration || '45 mins',
+      },
+      resolutionDetails: {
+        resolutionReason: event.resolution_reason || 'Pending review',
+        resolutionNotes: event.resolution_notes || 'No resolution notes provided yet.',
+      },
+      eventStatus: event.resolved_status || 'OPEN',
+    };
   }
 }
