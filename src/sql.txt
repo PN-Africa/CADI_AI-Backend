@@ -143,3 +143,78 @@ ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE;
 
 -- Index for fast notification filtering and sorting
 CREATE INDEX IF NOT EXISTS activity_events_notification_idx ON activity_events(is_read, alert_severity, created_at DESC);
+
+-- 1. Create Patient Drafts Table
+CREATE TABLE IF NOT EXISTS patient_drafts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id UUID REFERENCES patients(id) ON DELETE CASCADE,
+  patient_name TEXT NOT NULL,
+  caregiver_assigned TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'NORMAL', -- e.g., 'EMERGENCY', 'NEEDS_ATTENTION', 'NORMAL'
+  last_update TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  notes TEXT NOT NULL,
+  resolution_status TEXT NOT NULL DEFAULT 'OPEN', -- 'OPEN' or 'CLOSED'
+  resolution_notes TEXT,
+  next_review TEXT NOT NULL DEFAULT 'NOT_SCHEDULED', -- 'SCHEDULED' or 'NOT_SCHEDULED'
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2. Create Draft Attachments Table
+CREATE TABLE IF NOT EXISTS draft_attachments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  draft_id UUID REFERENCES patient_drafts(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  file_url TEXT NOT NULL,
+  file_size TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 3. Indexes for fast lookup
+CREATE INDEX IF NOT EXISTS patient_drafts_patient_idx ON patient_drafts(patient_id);
+CREATE INDEX IF NOT EXISTS draft_attachments_draft_idx ON draft_attachments(draft_id);
+
+-- 1. Create Admin Notes Table (Rule 5)
+CREATE TABLE IF NOT EXISTS admin_notes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_email TEXT NOT NULL,
+  note_content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2. Add pending invite and active status tracking to users table (Rule 3)
+ALTER TABLE users 
+ADD COLUMN IF NOT EXISTS is_active_admin BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS invite_status TEXT DEFAULT 'ACTIVE'; -- 'ACTIVE', 'PENDING'
+
+CREATE INDEX IF NOT EXISTS admin_notes_created_idx ON admin_notes(created_at DESC);
+
+-- 1. Add location, duty status, and photo fields to users table
+ALTER TABLE users 
+ADD COLUMN IF NOT EXISTS full_name TEXT DEFAULT 'Medical Staff',
+ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT 'https://ui-avatars.com/api/?name=User',
+ADD COLUMN IF NOT EXISTS duty_status TEXT DEFAULT 'ON_DUTY'; -- 'ON_DUTY', 'AVAILABLE', 'TASKED'
+
+-- 2. Add event location and patient safety to activity_events table (Rule 2)
+ALTER TABLE activity_events 
+ADD COLUMN IF NOT EXISTS event_location TEXT DEFAULT 'Ward A - Room 102',
+ADD COLUMN IF NOT EXISTS patient_safety TEXT DEFAULT 'STABLE'; -- 'STABLE', 'CRITICAL', 'UNDER_OBSERVATION'
+
+-- 3. Create admin_tasks table for tracking assignments (Rules 1, 3, 4)
+CREATE TABLE IF NOT EXISTS admin_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id UUID REFERENCES activity_events(id) ON DELETE CASCADE,
+  patient_id UUID REFERENCES patients(id) ON DELETE CASCADE,
+  task_type TEXT NOT NULL,
+  assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+  priority TEXT NOT NULL DEFAULT 'HIGH', -- 'HIGH', 'NORMAL', 'MEDIUM'
+  due_by TEXT NOT NULL, -- e.g. '30 mins', '2 hrs'
+  assignment_message TEXT,
+  task_status TEXT NOT NULL DEFAULT 'UNASSIGNED', -- 'UNASSIGNED', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED'
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS admin_tasks_status_idx ON admin_tasks(task_status);

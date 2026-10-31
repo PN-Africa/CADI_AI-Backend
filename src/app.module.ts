@@ -9,6 +9,9 @@ import { PatientsModule } from './patients/patients.module';
 import { OverviewModule } from './overview/overview.module'; 
 import { NotificationsModule } from './notifications/notifications.module';
 import { SettingsModule } from './settings/settings.module';
+import { DraftsModule } from './drafts/drafts.module'
+import { AdminDashboardModule } from './admin-dashboard/admin-dashboard.module';
+import { AdminTasksModule } from './admin-tasks/admin-tasks.module';
 
 @Module({
   imports: [
@@ -22,6 +25,8 @@ import { SettingsModule } from './settings/settings.module';
     OverviewModule,
     NotificationsModule,
     SettingsModule,
+    AdminDashboardModule,
+    AdminTasksModule,
   ],
   controllers: [AppController],
   providers: [AppService],
