@@ -7,12 +7,9 @@ import {
   VerifyEmailDto, 
   ForgotPasswordDto, 
   ResetPasswordDto, 
-  AdminLoginDto,
-  VerifyAdminTokenDto,
-  AdminLoginResponseDto,
-  AdminVerifyResponseDto,
+  AdminCredentialsLoginDto,
   BaseAuthResponseDto, 
-  LoginResponseDto     
+  LoginResponseDto,
 } from './dto/auth.dto';
 @ApiTags('Authentication')
 @Controller('auth')
@@ -100,27 +97,10 @@ export class AuthController {
 
   @Post('admin/login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Request passwordless magic link for Admin Gmail' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Magic link sent to admin email.',
-    type: AdminLoginResponseDto 
-  })
-  @ApiResponse({ status: 403, description: 'Email not in ADMIN_EMAILS list' })
-  async requestAdminLogin(@Body() adminLoginDto: AdminLoginDto) {
-    return this.authService.requestAdminLogin(adminLoginDto);
-  }
-
-  @Post('admin/verify')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Verify admin magic link token and issue JWT' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Admin verified and logged in successfully',
-    type: AdminVerifyResponseDto 
-  })
-  @ApiResponse({ status: 400, description: 'Invalid or expired token' })
-  async verifyAdminLogin(@Body() verifyAdminTokenDto: VerifyAdminTokenDto) {
-    return this.authService.verifyAdminLogin(verifyAdminTokenDto);
+  @ApiOperation({ summary: 'Admin login using hardcoded email and password' })
+  @ApiResponse({ status: 200, description: 'Admin authentication successful and JWT returned' })
+  @ApiResponse({ status: 401, description: 'Invalid admin credentials' })
+  async adminLogin(@Body() dto: AdminCredentialsLoginDto) {
+    return await this.authService.adminLogin(dto);
   }
 }

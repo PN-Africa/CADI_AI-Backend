@@ -15,9 +15,8 @@ import {
   LoginDto, 
   VerifyEmailDto, 
   ForgotPasswordDto, 
-  ResetPasswordDto, 
-  AdminLoginDto, 
-  VerifyAdminTokenDto 
+  ResetPasswordDto,
+  AdminCredentialsLoginDto
 } from './dto/auth.dto';
 
 @Injectable()
@@ -224,59 +223,20 @@ export class AuthService {
     return { message: 'Password changed successfully. You can now log in.' };
   }
 
-  async requestAdminLogin(data: AdminLoginDto) {
-    const allowedEmails = (process.env.ADMIN_EMAILS || '')
-      .split(',')
-      .map((e) => e.trim().toLowerCase());
+  async adminLogin(data: AdminCredentialsLoginDto) {
+    // Hardcoded admin credentials known only to admins (can also be overridden via .env if desired)
+    const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@cadi.ai';
+    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'CadiAdminSecret2026!';
 
     const inputEmail = data.email.trim().toLowerCase();
 
-    if (!allowedEmails.includes(inputEmail)) {
-      throw new ForbiddenException('Unauthorized: Email is not registered as an Admin');
+    if (inputEmail !== ADMIN_EMAIL.toLowerCase() || data.password !== ADMIN_PASSWORD) {
+      this.logger.warn(`Failed admin login attempt for email: ${inputEmail}`);
+      throw new UnauthorizedException('Invalid admin credentials');
     }
 
-    const token = randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-
-    // Uses admin_users table
-    const { error } = await this.supabase
-      .from('admin_users')
-      .insert({
-        email: inputEmail,
-        token,
-        expires_at: expiresAt,
-      });
-
-    if (error) {
-      this.logger.error(`Request Admin Login DB Error: ${error.message}`);
-      throw new BadRequestException(`Failed to generate admin token: ${error.message}`);
-    }
-
-    await this.emailService.sendAdminMagicLink(inputEmail, token);
-
-    return { message: 'Verification link sent to your admin email.' };
-  }
-
-  async verifyAdminLogin(data: VerifyAdminTokenDto) {
-    // Uses admin_users table
-    const { data: adminToken, error: findError } = await this.supabase
-      .from('admin_users')
-      .select('*')
-      .eq('token', data.token)
-      .maybeSingle();
-
-    if (findError || !adminToken) {
-      throw new BadRequestException('Invalid or expired verification token');
-    }
-
-    if (new Date(adminToken.expires_at) < new Date()) {
-      await this.supabase.from('admin_users').delete().eq('id', adminToken.id);
-      throw new BadRequestException('Verification token has expired');
-    }
-
-    await this.supabase.from('admin_users').delete().eq('id', adminToken.id);
-
-    const payload = { email: adminToken.email, role: 'ADMIN' };
+    // Generate Admin JWT Access Token with ROLE: 'ADMIN'
+    const payload = { email: ADMIN_EMAIL, role: 'ADMIN' };
     const accessToken = await this.jwtService.signAsync(payload);
 
     return {

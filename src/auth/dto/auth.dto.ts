@@ -102,32 +102,14 @@ export class LoginResponseDto {
   accessToken!: string;
 }
 
-export class AdminLoginDto {
-  @ApiProperty({ example: 'owner@gmail.com', description: 'Admin Gmail address' })
+export class AdminCredentialsLoginDto {
+  @ApiProperty({ example: 'admin@cadi.ai', description: 'Hardcoded admin email' })
   @IsNotEmpty()
   @IsEmail()
   email!: string;
-}
 
-export class VerifyAdminTokenDto {
-  @ApiProperty({ description: 'Verification token sent via email' })
+  @ApiProperty({ example: 'CadiAdminSecret2026!', description: 'Hardcoded admin password' })
   @IsNotEmpty()
   @IsString()
-  token!: string;
-}
-
-export class AdminLoginResponseDto {
-  @ApiProperty({ example: 'Verification link sent to your email.' })
-  message!: string;
-}
-
-export class AdminVerifyResponseDto {
-  @ApiProperty({ example: 'Admin authentication successful' })
-  message!: string;
-
-  @ApiProperty({ example: 'ADMIN' })
-  role!: string;
-
-  @ApiProperty({ description: 'JWT Access Token' })
-  accessToken!: string;
-}
+  password!: string;
+}``
