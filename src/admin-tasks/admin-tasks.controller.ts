@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagg
 import { JwtService } from '@nestjs/jwt';
 import { AdminTasksService } from './admin-tasks.service';
 import { AdminTaskPageResponseDto, AssignTaskDto } from './dto/admin-task.dto';
+import { ProfessionalListItemDto, AssignProfessionalToTaskDto } from './dto/professional-assignment.dto';
 
 @ApiTags('Admin Tasks')
 @Controller('admin/tasks')
@@ -48,5 +49,25 @@ export class AdminTasksController {
   async assignTask(@Body() dto: AssignTaskDto, @Req() req: any) {
     const admin = await this.authenticateAdmin(req);
     return await this.adminTasksService.assignTask(admin.sub || admin.email, dto);
+  }
+
+  @Get('professionals')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get list of all caregivers and healthcare professionals in tabular form for task assignment (Rule 1)' })
+  @ApiResponse({ status: 200, description: 'Professionals list retrieved successfully', type: [ProfessionalListItemDto] })
+  async getProfessionalsForAssignment(@Req() req: any) {
+    await this.authenticateAdmin(req);
+    return await this.adminTasksService.getProfessionalsForAssignment();
+  }
+
+  @Post('assign-professional')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Assign professional to task and trigger notification (Rule 1)' })
+  @ApiResponse({ status: 200, description: 'Professional assigned and notification sent successfully' })
+  async assignProfessionalToTask(@Body() dto: AssignProfessionalToTaskDto, @Req() req: any) {
+    await this.authenticateAdmin(req);
+    return await this.adminTasksService.assignProfessionalToTask(dto);
   }
 }

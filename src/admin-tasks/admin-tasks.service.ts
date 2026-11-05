@@ -143,4 +143,74 @@ export class AdminTasksService {
       },
     };
   }
+
+  // 1. Get tabular list of all professionals for Task Assignment Page
+  async getProfessionalsForAssignment() {
+    const { data: users, error } = await this.supabase
+      .from('users')
+      .select('id, full_name, email, role, duty_status')
+      .in('role', ['CAREGIVER', 'HEALTHCARE_PROFESSIONAL']);
+
+    if (error) {
+      this.logger.error(`Error fetching professionals: ${error.message}`);
+      throw new BadRequestException('Failed to retrieve professionals list');
+    }
+
+    const professionalList = [];
+    for (const u of (users || [])) {
+      // Count current active patients assigned to this user
+      const { count } = await this.supabase
+        .from('patients')
+        .select('*', { count: 'exact', head: true })
+        .eq('assigned_caregiver_id', u.id);
+
+      professionalList.push({
+        id: u.id,
+        name: u.full_name || u.email,
+        role: u.role,
+        availability: u.duty_status || 'AVAILABLE',
+        currentPatientsCount: count || 0,
+        action: 'Assign',
+      });
+    }
+
+    return professionalList;
+  }
+
+  // 2. Assign professional to task and send notification
+  async assignProfessionalToTask(dto: AssignProfessionalToTaskDto) {
+    const { taskId, professionalId, assignmentMessage } = dto;
+
+    // Update admin_tasks or activity_events assignment
+    const { error: taskError } = await this.supabase
+      .from('admin_tasks')
+      .update({ assigned_to: professionalId, task_status: 'ASSIGNED' })
+      .eq('id', taskId);
+
+    if (taskError) {
+      this.logger.error(`Failed to assign task: ${taskError.message}`);
+      throw new BadRequestException('Failed to assign professional to task');
+    }
+
+    // Send notification to the assigned professional
+    const notificationMessage = assignmentMessage || 'You have been assigned to a new patient monitoring task.';
+    await this.supabase.from('user_notifications').insert({
+      user_id: professionalId,
+      title: 'New Task Assignment',
+      message: notificationMessage,
+      is_read: false,
+    });
+
+    // Update professional status to TASKED
+    await this.supabase
+      .from('users')
+      .update({ duty_status: 'TASKED' })
+      .eq('id', professionalId);
+
+    return {
+      message: 'Professional successfully assigned to task and notification sent.',
+      taskId,
+      professionalId,
+    };
+  }
 }

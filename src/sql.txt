@@ -218,3 +218,50 @@ CREATE TABLE IF NOT EXISTS admin_tasks (
 );
 
 CREATE INDEX IF NOT EXISTS admin_tasks_status_idx ON admin_tasks(task_status);
+
+-- Extended fields for Admin Patient Management
+ALTER TABLE patients 
+ADD COLUMN IF NOT EXISTS first_name TEXT,
+ADD COLUMN IF NOT EXISTS last_name TEXT,
+ADD COLUMN IF NOT EXISTS date_of_birth DATE,
+ADD COLUMN IF NOT EXISTS gender TEXT, -- 'male' or 'female'
+ADD COLUMN IF NOT EXISTS phone_number TEXT,
+ADD COLUMN IF NOT EXISTS email_address TEXT,
+ADD COLUMN IF NOT EXISTS home_address TEXT,
+
+-- Emergency Contact Section
+ADD COLUMN IF NOT EXISTS emergency_contact_name TEXT,
+ADD COLUMN IF NOT EXISTS emergency_contact_relationship TEXT, -- 'single' or 'married'
+ADD COLUMN IF NOT EXISTS emergency_contact_phone TEXT,
+
+-- Care Section
+ADD COLUMN IF NOT EXISTS allergies TEXT,
+ADD COLUMN IF NOT EXISTS care_notes TEXT;
+
+-- Extended clinical fields for Edit Patient Section
+ALTER TABLE patients 
+ADD COLUMN IF NOT EXISTS medical_record_number TEXT,
+ADD COLUMN IF NOT EXISTS primary_care_physician TEXT,
+ADD COLUMN IF NOT EXISTS care_team TEXT;
+
+-- 1. Add Manage Users editable fields to users table
+ALTER TABLE users 
+ADD COLUMN IF NOT EXISTS first_name TEXT,
+ADD COLUMN IF NOT EXISTS last_name TEXT,
+ADD COLUMN IF NOT EXISTS access_level TEXT DEFAULT 'Standard',
+ADD COLUMN IF NOT EXISTS department TEXT DEFAULT 'General',
+ADD COLUMN IF NOT EXISTS assigned_team TEXT DEFAULT 'Team A',
+ADD COLUMN IF NOT EXISTS patient_group TEXT DEFAULT 'Group 1',
+ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- 2. Create user_notifications table for tracking notifications sent to professionals
+CREATE TABLE IF NOT EXISTS user_notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  is_read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS user_notifications_user_idx ON user_notifications(user_id, created_at DESC);
