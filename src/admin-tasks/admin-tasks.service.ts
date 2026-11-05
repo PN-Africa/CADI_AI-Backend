@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { AssignTaskDto } from './dto/admin-task.dto';
+import { ProfessionalListItemDto, AssignProfessionalToTaskDto } from './dto/professional-assignment.dto';
 
 @Injectable()
 export class AdminTasksService {
