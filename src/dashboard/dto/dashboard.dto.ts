@@ -1,14 +1,20 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 export class DashboardMetricsDto {
-  @ApiProperty({ example: 25, description: 'Total patients currently monitored' })
-  totalPatientsMonitored!: number;
+  @ApiProperty({ example: 12, description: 'Total patients under monitoring' })
+  totalPatients!: number;
 
-  @ApiProperty({ example: 4, description: 'Total patients needing attention' })
-  totalPatientsNeedingAttention!: number;
+  @ApiProperty({ example: 2, description: 'Number of emergency patients' })
+  emergencyPatients!: number;
 
-  @ApiProperty({ example: 2, description: 'Number of active emergency alerts' })
-  totalEmergencyAlerts!: number;
+  @ApiProperty({ example: 3, description: 'Number of patients needing attention' })
+  needsAttentionPatients!: number;
+
+  @ApiProperty({ example: 7, description: 'Number of normal status patients' })
+  normalPatients!: number;
+
+  @ApiProperty({ example: 4, description: 'Active alerts count' })
+  activeAlerts!: number;
 }
 
 export class PatientStatusBreakdownDto {
@@ -39,9 +45,26 @@ export class PatientListItemDto {
   status!: string;
 }
 
+export class DashboardPatientSummaryItemDto {
+  @ApiProperty({ example: '123e4567-e89b-12d3-a456-426614174000' })
+  id!: string;
+
+  @ApiProperty({ example: 'Jane Doe - PAT-1001' })
+  patientIdentifier!: string;
+
+  @ApiProperty({ example: 'EMERGENCY' })
+  status!: string;
+
+  @ApiProperty({ example: '15 mins' })
+  waitingTime!: string;
+}
+
 export class DashboardResponseDto {
   @ApiProperty({ type: DashboardMetricsDto })
   metrics!: DashboardMetricsDto;
+
+  @ApiProperty({ type: [DashboardPatientSummaryItemDto] })
+  priorityPatients!: DashboardPatientSummaryItemDto[];
 
   @ApiProperty({ type: PatientStatusBreakdownDto, description: 'Data for the circular status chart' })
   statusBreakdown!: PatientStatusBreakdownDto;

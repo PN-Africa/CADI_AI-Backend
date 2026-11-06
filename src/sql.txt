@@ -265,3 +265,107 @@ CREATE TABLE IF NOT EXISTS user_notifications (
 );
 
 CREATE INDEX IF NOT EXISTS user_notifications_user_idx ON user_notifications(user_id, created_at DESC);
+
+
+-- ====================================================================
+-- AUTOMATED PATIENT SYNCHRONIZATION TRIGGER & FUNCTION
+-- ====================================================================
+
+CREATE OR REPLACE FUNCTION public.sync_patient_status_change()
+returns trigger
+language plpgsql
+security definer
+as $$
+begin
+  -- If status changed to EMERGENCY or NEEDS_ATTENTION, or if it's a new record
+  if (TG_OP = 'INSERT') or (NEW.status != OLD.status) then
+    if NEW.status = 'EMERGENCY' or NEW.status = 'NEEDS_ATTENTION' then
+      
+      -- 1. Automatically insert an activity event alert
+      insert into public.activity_events (
+        patient_id,
+        event_type,
+        description,
+        alert_severity,
+        resolved_status,
+        is_read,
+        duration,
+        source,
+        event_location,
+        patient_safety
+      ) values (
+        NEW.id,
+        case when NEW.status = 'EMERGENCY' then 'FALL_DETECTION' else 'INACTIVITY_DETECTION' end,
+        coalesce(NEW.current_condition, 'Patient status updated to ' || NEW.status || '. Immediate clinical review required.'),
+        case when NEW.status = 'EMERGENCY' then 'URGENT' else 'FOLLOW_UP' end,
+        'PENDING',
+        false,
+        '15 mins',
+        'Automated Database Sync',
+        coalesce(NEW.home_address, 'Ward A - General Care'),
+        case when NEW.status = 'EMERGENCY' then 'CRITICAL' else 'UNDER_OBSERVATION' end
+      );
+
+      -- 2. Automatically dispatch an admin task entry
+      insert into public.admin_tasks (
+        event_id,
+        patient_id,
+        task_type,
+        priority,
+        due_by,
+        assignment_message,
+        task_status
+      ) 
+      select 
+        ae.id,
+        NEW.id,
+        NEW.status || ': Clinical Oversight & Response',
+        case when NEW.status = 'EMERGENCY' then 'HIGH' else 'MEDIUM' end,
+        case when NEW.status = 'EMERGENCY' then '15 mins' else '60 mins' end,
+        coalesce(NEW.care_notes, 'Auto-dispatched task from patient status sync.'),
+        'UNASSIGNED'
+      from public.activity_events ae
+      where ae.patient_id = NEW.id
+      order by ae.created_at desc
+      limit 1;
+      
+    end if;
+  end if;
+
+  -- 3. Ensure a monitoring time-series reading exists on creation
+  if TG_OP = 'INSERT' then
+    insert into public.monitoring_readings (
+      patient_id,
+      heart_rate,
+      blood_oxygen,
+      temperature,
+      movement_val,
+      recorded_at
+    ) values (
+      NEW.id,
+      coalesce(NEW.heart_rate, 75),
+      coalesce(NEW.blood_oxygen, 98.0),
+      coalesce(NEW.temperature, 36.6),
+      coalesce(NEW.movement_km, 1.2),
+      now()
+    );
+  end if;
+
+  return NEW;
+end;
+$$;
+
+-- Attach trigger to patients table
+drop trigger if exists tr_sync_patient_status on public.patients;
+create trigger tr_sync_patient_status
+  after insert or update on public.patients
+  for each row
+  execute function public.sync_patient_status_change();
+
+  -- Add profile and notification columns to users table for settings management
+ALTER TABLE users 
+ADD COLUMN IF NOT EXISTS full_name TEXT DEFAULT 'System Administrator',
+ADD COLUMN IF NOT EXISTS care_team TEXT DEFAULT 'Geriatric Care Unit A',
+ADD COLUMN IF NOT EXISTS push_notifications BOOLEAN DEFAULT TRUE,
+ADD COLUMN IF NOT EXISTS email_summaries BOOLEAN DEFAULT TRUE,
+ADD COLUMN IF NOT EXISTS sms_alerts BOOLEAN DEFAULT FALSE;

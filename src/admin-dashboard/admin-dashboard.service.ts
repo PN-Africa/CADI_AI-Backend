@@ -210,20 +210,63 @@ export class AdminDashboardService {
     }));
   }
 
-  // 2. Create / Save Patient (Rule 1)
+  // Helper: Synchronize patient status updates into activity events and admin tasks
+  private async syncPatientActivityAndTask(patientId: string, status: string, notes?: string) {
+    if (status === 'EMERGENCY' || status === 'NEEDS_ATTENTION') {
+      const severity = status === 'EMERGENCY' ? 'URGENT' : 'FOLLOW_UP';
+      const eventType = status === 'EMERGENCY' ? 'FALL_DETECTION' : 'INACTIVITY_DETECTION';
+      const description = notes || `Patient status updated to ${status}. Immediate review required.`;
+
+      // 1. Insert synchronized activity event so notifications and alerts pick it up
+      const { data: event, error: eventError } = await this.supabase
+        .from('activity_events')
+        .insert({
+          patient_id: patientId,
+          event_type: eventType,
+          description: description,
+          alert_severity: severity,
+          resolved_status: 'PENDING',
+          is_read: false,
+          duration: '15 mins',
+          source: 'System Patient Synchronization',
+          event_location: 'Main Ward - General Care',
+          patient_safety: status === 'EMERGENCY' ? 'CRITICAL' : 'UNDER_OBSERVATION',
+        })
+        .select()
+        .single();
+
+      if (eventError) {
+        this.logger.error(`Failed to sync activity event: ${eventError.message}`);
+      }
+
+      // 2. Insert admin task if EMERGENCY or NEEDS_ATTENTION so task queue populates automatically
+      if (event) {
+        await this.supabase
+          .from('admin_tasks')
+          .insert({
+            event_id: event.id,
+            patient_id: patientId,
+            task_type: `${status.replace('_', ' ')}: Review & Response`,
+            priority: status === 'EMERGENCY' ? 'HIGH' : 'MEDIUM',
+            due_by: status === 'EMERGENCY' ? '15 mins' : '60 mins',
+            assignment_message: description,
+            task_status: 'UNASSIGNED',
+          });
+      }
+    }
+  }
+
+  // 1. Create Patient (With Auto Patient ID & Auto Sync)
   async createPatient(dto: CreatePatientDto) {
     const { personalInformation, emergencyContact, care } = dto;
 
-    // Generate unique alphanumeric patient ID code (e.g. PAT-8492)
     const randomCode = Math.floor(1000 + Math.random() * 9000);
     const patientIdCode = `PAT-${randomCode}`;
     const fullName = `${personalInformation.firstName.trim()} ${personalInformation.lastName.trim()}`;
 
-    // Calculate age from Date of Birth
     const dob = new Date(personalInformation.dateOfBirth);
     const ageDiffMs = Date.now() - dob.getTime();
-    const ageDate = new Date(ageDiffMs);
-    const calculatedAge = Math.abs(ageDate.getUTCFullYear() - 1970);
+    const calculatedAge = Math.abs(new Date(ageDiffMs).getUTCFullYear() - 1970);
 
     const { data: patient, error } = await this.supabase
       .from('patients')
@@ -257,8 +300,11 @@ export class AdminDashboardService {
       throw new BadRequestException(`Failed to save patient: ${error?.message || 'Unknown error'}`);
     }
 
+    // Trigger auto-sync for alerts and tasks
+    await this.syncPatientActivityAndTask(patient.id, care.status, care.careNotes);
+
     return {
-      message: 'Patient saved successfully',
+      message: 'Patient saved successfully and synchronized across dashboards',
       patient: {
         id: patient.id,
         patientIdCode: patient.patient_id_code,
@@ -266,6 +312,59 @@ export class AdminDashboardService {
         status: patient.status,
         assignedCaregiverId: patient.assigned_caregiver_id,
         createdAt: patient.created_at,
+      },
+    };
+  }
+
+  // 2. Update Patient (With Auto Sync for Status & Details)
+  async updatePatient(patientId: string, dto: UpdatePatientDto) {
+    const { patientDetails, clinicalInformation } = dto;
+    const fullName = `${patientDetails.firstName.trim()} ${patientDetails.lastName.trim()}`;
+
+    const dob = new Date(patientDetails.dateOfBirth);
+    const ageDiffMs = Date.now() - dob.getTime();
+    const calculatedAge = Math.abs(new Date(ageDiffMs).getUTCFullYear() - 1970);
+
+    const { data: updatedPatient, error } = await this.supabase
+      .from('patients')
+      .update({
+        name: fullName,
+        first_name: patientDetails.firstName.trim(),
+        last_name: patientDetails.lastName.trim(),
+        date_of_birth: patientDetails.dateOfBirth,
+        age: calculatedAge,
+        email_address: patientDetails.emailAddress.trim().toLowerCase(),
+        phone_number: patientDetails.phoneNumber.trim(),
+        gender: patientDetails.gender,
+
+        medical_record_number: clinicalInformation.medicalRecordNumber.trim(),
+        primary_care_physician: clinicalInformation.primaryCarePhysician.trim(),
+        care_team: clinicalInformation.careTeam.trim(),
+        status: clinicalInformation.patientStatus,
+        care_notes: clinicalInformation.notes ? clinicalInformation.notes.trim() : '',
+        current_condition: clinicalInformation.notes || 'Patient clinical details updated.',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', patientId)
+      .select()
+      .single();
+
+    if (error || !updatedPatient) {
+      this.logger.error(`Error updating patient record: ${error?.message}`);
+      throw new BadRequestException(`Failed to update patient: ${error?.message || 'Unknown error'}`);
+    }
+
+    // Trigger auto-sync for alerts and tasks upon status change or note update
+    await this.syncPatientActivityAndTask(updatedPatient.id, clinicalInformation.patientStatus, clinicalInformation.notes);
+
+    return {
+      message: 'Patient details updated and synchronized across all dashboards successfully',
+      patient: {
+        id: updatedPatient.id,
+        patientIdCode: updatedPatient.patient_id_code,
+        fullName: updatedPatient.name,
+        status: updatedPatient.status,
+        updatedAt: updatedPatient.updated_at,
       },
     };
   }
@@ -303,57 +402,6 @@ export class AdminDashboardService {
     };
   }
 
-  // 2. Update Patient Record ("Save Changes" Button Action)
-  async updatePatient(patientId: string, dto: UpdatePatientDto) {
-    const { patientDetails, clinicalInformation } = dto;
-    const fullName = `${patientDetails.firstName.trim()} ${patientDetails.lastName.trim()}`;
-
-    // Recalculate age from Date of Birth
-    const dob = new Date(patientDetails.dateOfBirth);
-    const ageDiffMs = Date.now() - dob.getTime();
-    const ageDate = new Date(ageDiffMs);
-    const calculatedAge = Math.abs(ageDate.getUTCFullYear() - 1970);
-
-    const { data: updatedPatient, error } = await this.supabase
-      .from('patients')
-      .update({
-        name: fullName,
-        first_name: patientDetails.firstName.trim(),
-        last_name: patientDetails.lastName.trim(),
-        date_of_birth: patientDetails.dateOfBirth,
-        age: calculatedAge,
-        email_address: patientDetails.emailAddress.trim().toLowerCase(),
-        phone_number: patientDetails.phoneNumber.trim(),
-        gender: patientDetails.gender,
-
-        medical_record_number: clinicalInformation.medicalRecordNumber.trim(),
-        primary_care_physician: clinicalInformation.primaryCarePhysician.trim(),
-        care_team: clinicalInformation.careTeam.trim(),
-        status: clinicalInformation.patientStatus,
-        care_notes: clinicalInformation.notes ? clinicalInformation.notes.trim() : '',
-        current_condition: clinicalInformation.notes || 'Patient clinical details updated.',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', patientId)
-      .select()
-      .single();
-
-    if (error || !updatedPatient) {
-      this.logger.error(`Error updating patient record: ${error?.message}`);
-      throw new BadRequestException(`Failed to update patient: ${error?.message || 'Unknown error'}`);
-    }
-
-    return {
-      message: 'Patient details updated successfully',
-      patient: {
-        id: updatedPatient.id,
-        patientIdCode: updatedPatient.patient_id_code,
-        fullName: updatedPatient.name,
-        status: updatedPatient.status,
-        updatedAt: updatedPatient.updated_at,
-      },
-    };
-  }
 
   // 1. Get user details for editing in Manage Users page
   async getUserForEdit(userId: string) {
