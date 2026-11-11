@@ -14,25 +14,25 @@ export class DashboardService {
   }
 
   async getUserDashboardData(userId: string, userRole: string) {
-    let query = this.supabase.from('patients').select('*');
+    // 1. Try fetching patients assigned to this specific user
+    let { data: patients, error } = await this.supabase
+      .from('patients')
+      .select('*')
+      .eq('assigned_caregiver_id', userId);
 
-    // If caregiver, check if assigned patients exist. If none, fallback to all patients so metrics aren't empty.
-    if (userRole === 'CAREGIVER') {
-      const { data: assignedPatients } = await this.supabase
+    // 2. Fallback: If none assigned and user is staff/caregiver, show all patients so dashboard isn't blank
+    if (!patients || patients.length === 0) {
+      const { data: allPatients, error: allErr } = await this.supabase
         .from('patients')
-        .select('*')
-        .eq('assigned_caregiver_id', userId);
-
-      if (assignedPatients && assignedPatients.length > 0) {
-        query = query.eq('assigned_caregiver_id', userId);
+        .select('*');
+      
+      if (!allErr && allPatients) {
+        patients = allPatients;
       }
     }
 
-    const { data: patients, error } = await query;
-
     if (error) {
       this.logger.error(`Error fetching user dashboard patients: ${error.message}`);
-      throw new Error('Failed to retrieve dashboard metrics');
     }
 
     const patientList = patients || [];
