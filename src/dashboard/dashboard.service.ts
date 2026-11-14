@@ -78,6 +78,15 @@ export class DashboardService {
       .select('*', { count: 'exact', head: true })
       .eq('resolved_status', 'PENDING');
 
+    // 3. Construct tabular patient list for the dashboard table matching PatientListItemDto
+    const patientTableList = patientList.map((p) => ({
+      id: p.id,
+      name: p.name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown Patient',
+      patientId: p.patient_id_code,
+      currentCondition: p.current_condition || p.care_notes || 'Monitored under clinical guidelines.',
+      status: p.status,
+    }));
+
     return {
       metrics: {
         totalPatients,
@@ -92,6 +101,12 @@ export class DashboardService {
         status,
         waitingTime,
       })),
+      statusBreakdown: {
+        normal: normalPatients,
+        needsAttention: needsAttentionPatients,
+        emergency: emergencyPatients,
+      },
+      patients: patientTableList,
     };
   }
 }
