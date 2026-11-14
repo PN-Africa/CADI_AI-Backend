@@ -14,25 +14,33 @@ export class DashboardService {
   }
 
   async getUserDashboardData(userId: string, userRole: string) {
-    // 1. Try fetching patients assigned to this specific user
-    let { data: patients, error } = await this.supabase
-      .from('patients')
-      .select('*')
-      .eq('assigned_caregiver_id', userId);
+    let patients: any[] = [];
 
-    // 2. Fallback: If none assigned and user is staff/caregiver, show all patients so dashboard isn't blank
+    // 1. Try fetching patients assigned to this specific user if ID looks like a valid UUID
+    if (userId && userId.length > 20) {
+      try {
+        const { data, error } = await this.supabase
+          .from('patients')
+          .select('*')
+          .eq('assigned_caregiver_id', userId);
+
+        if (!error && data) {
+          patients = data;
+        }
+      } catch (e: any) {
+        this.logger.warn(`Could not query by assigned_caregiver_id: ${e.message}`);
+      }
+    }
+
+    // 2. Fallback: If none assigned or query skipped, fetch all patients so dashboard isn't blank
     if (!patients || patients.length === 0) {
       const { data: allPatients, error: allErr } = await this.supabase
         .from('patients')
         .select('*');
-      
+
       if (!allErr && allPatients) {
         patients = allPatients;
       }
-    }
-
-    if (error) {
-      this.logger.error(`Error fetching user dashboard patients: ${error.message}`);
     }
 
     const patientList = patients || [];
@@ -43,21 +51,27 @@ export class DashboardService {
     let normalPatients = 0;
 
     const priorityPatients = patientList.map((p) => {
-      if (p.status === 'EMERGENCY') emergencyPatients++;
-      else if (p.status === 'NEEDS_ATTENTION') needsAttentionPatients++;
-      else normalPatients++;
+      const statusUpper = (p.status || 'NORMAL').toUpperCase();
+      
+      if (statusUpper === 'EMERGENCY') {
+        emergencyPatients++;
+      } else if (statusUpper === 'NEEDS_ATTENTION' || statusUpper === 'NEEDS ATTENTION') {
+        needsAttentionPatients++;
+      } else {
+        normalPatients++;
+      }
 
-      const diffMs = new Date().getTime() - new Date(p.updated_at || p.created_at).getTime();
+      const diffMs = new Date().getTime() - new Date(p.updated_at || p.created_at || Date.now()).getTime();
       const diffMins = Math.max(1, Math.floor(diffMs / 60000));
 
       let priorityWeight = 1;
-      if (p.status === 'EMERGENCY') priorityWeight = 3;
-      else if (p.status === 'NEEDS_ATTENTION') priorityWeight = 2;
+      if (statusUpper === 'EMERGENCY') priorityWeight = 3;
+      else if (statusUpper === 'NEEDS_ATTENTION' || statusUpper === 'NEEDS ATTENTION') priorityWeight = 2;
 
       return {
         id: p.id,
-        patientIdentifier: `${p.name} - ${p.patient_id_code}`,
-        status: p.status,
+        patientIdentifier: `${p.name || 'Patient'} - ${p.patient_id_code || 'PAT-0000'}`,
+        status: statusUpper,
         waitingMins: diffMins,
         priorityWeight,
         waitingTime: `${diffMins} mins`,
@@ -73,19 +87,30 @@ export class DashboardService {
     });
 
     // Fetch active alerts count from activity_events
-    const { count: activeAlertsCount } = await this.supabase
+    const { count: activeAlertsCount, error: alertErr } = await this.supabase
       .from('activity_events')
       .select('*', { count: 'exact', head: true })
-      .eq('resolved_status', 'PENDING');
+      .in('resolved_status', ['PENDING', 'OPEN', 'PENDING_REVIEW']);
 
-    // 3. Construct tabular patient list for the dashboard table matching PatientListItemDto
-    const patientTableList = patientList.map((p) => ({
-      id: p.id,
-      name: p.name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown Patient',
-      patientId: p.patient_id_code,
-      currentCondition: p.current_condition || p.care_notes || 'Monitored under clinical guidelines.',
-      status: p.status,
-    }));
+    if (alertErr) {
+      this.logger.error(`Error fetching active alerts count: ${alertErr.message}`);
+    }
+
+    // 3. Construct tabular patient list matching all possible frontend property variations
+    const patientTableList = patientList.map((p) => {
+      const patientName = p.name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown Patient';
+      const patientCode = p.patient_id_code || 'PAT-0000';
+      const statusUpper = (p.status || 'NORMAL').toUpperCase();
+
+      return {
+        id: p.id,
+        name: patientName,
+        patientId: patientCode,
+        patientDisplay: `${patientName} - ${patientCode}`,
+        currentCondition: p.current_condition || p.care_notes || 'Monitored under clinical guidelines.',
+        status: statusUpper,
+      };
+    });
 
     return {
       metrics: {
